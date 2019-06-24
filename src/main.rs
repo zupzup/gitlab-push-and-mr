@@ -34,6 +34,7 @@ const SSH_KEY_FILE: &str = "/Users/mario/.ssh/id_rsa";
 #[derive(Debug, Deserialize, Clone)]
 struct Config {
     group: Option<String>,
+    user: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -139,12 +140,24 @@ fn fetch(
     // TODO: handle 400 / 500 errors as errors
     let https = HttpsConnector::new(4).unwrap();
     let client = Client::builder().build::<_, hyper::Body>(https);
-    let group = config.group.as_ref().expect("group not configured");
-    let req = Request::builder()
-        .uri(format!(
+    let group = config.group.as_ref();
+    let user = config.user.as_ref();
+    let uri = match group {
+        Some(v) => format!(
             "https://gitlab.com/api/v4/groups/{}/{}?per_page={}",
-            group, domain, per_page
-        ))
+            v, domain, per_page
+        ),
+        None => match user {
+            Some(u) => format!(
+                "https://gitlab.com/api/v4/users/{}/{}?per_page={}",
+                u, domain, per_page
+            ),
+            None => "invalid url".to_string(),
+        },
+    };
+    println!("url: {}", uri);
+    let req = Request::builder()
+        .uri(uri)
         .header("PRIVATE-TOKEN", access_token.to_owned())
         .body(Body::empty())
         .unwrap();
@@ -257,6 +270,7 @@ fn main() {
         .get_matches();
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
+    println!("config: {:?}", config);
     let mr_config = get_mr_config().expect("could not read merge-request config");
 
     if let Some(matches) = matches.subcommand_matches("list") {
@@ -338,7 +352,9 @@ fn main() {
                     }
                 }
                 // TODO: with current branch and repo url, create merge request
-                // TODO: move project to gitlab to try it out
+                // TODO: Use https://gitlab.com/api/v4/users/mzupanmz/projects for fetching
+                // projects
+                // TODO make it configurable where the projects come from
                 future::ok(())
             },
         );
