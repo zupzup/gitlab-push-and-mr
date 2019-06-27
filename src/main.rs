@@ -136,8 +136,7 @@ fn fetch(
     access_token: String,
     domain: String,
     per_page: i32,
-) -> impl Future<Item = Vec<Body>, Error = hyper::Error> {
-    // TODO: handle 400 / 500 errors as errors
+) -> impl Future<Item = Vec<Body>, Error = Error> {
     let https = HttpsConnector::new(4).unwrap();
     let client = Client::builder().build::<_, hyper::Body>(https);
     let group = config.group.as_ref();
@@ -161,29 +160,40 @@ fn fetch(
         .header("PRIVATE-TOKEN", access_token.to_owned())
         .body(Body::empty())
         .unwrap();
-    client.request(req).and_then(move |res: Response<Body>| {
-        let mut result: Vec<Body> = Vec::new();
-        let pages: &str = match res.headers().get("x-total-pages") {
-            Some(v) => match v.to_str() {
-                Ok(v) => v,
-                _ => "0",
-            },
-            None => "0",
-        };
-        let p = pages.parse::<i32>().unwrap();
-        let body: Body = res.into_body();
-        result.push(body);
-        let mut futrs = Vec::new();
-        for page in 2..=p {
-            futrs.push(fetch_paged(&config, &access_token, &domain, &client, page));
-        }
-        return future::join_all(futrs).and_then(move |bodies| {
-            for b in bodies {
-                result.push(b);
+    client
+        .request(req)
+        .map_err(|e| format_err!("req err: {}", e))
+        .and_then(move |res: Response<Body>| {
+            if !res.status().is_success() {
+                return future::err(format_err!("unsuccessful request"));
             }
-            return future::ok(result);
-        });
-    })
+            return future::ok(res);
+        })
+        .and_then(move |res: Response<Body>| {
+            let mut result: Vec<Body> = Vec::new();
+            let pages: &str = match res.headers().get("x-total-pages") {
+                Some(v) => match v.to_str() {
+                    Ok(v) => v,
+                    _ => "0",
+                },
+                None => "0",
+            };
+            let p = pages.parse::<i32>().unwrap();
+            let body: Body = res.into_body();
+            result.push(body);
+            let mut futrs = Vec::new();
+            for page in 2..=p {
+                futrs.push(fetch_paged(&config, &access_token, &domain, &client, page));
+            }
+            return future::join_all(futrs)
+                .and_then(move |bodies| {
+                    for b in bodies {
+                        result.push(b);
+                    }
+                    return future::ok(result);
+                })
+                .map_err(|e| format_err!("requests error: {}", e));
+        })
 }
 
 fn fetch_paged(
@@ -192,7 +202,7 @@ fn fetch_paged(
     domain: &str,
     client: &hyper::Client<HttpsConnector<HttpConnector>>,
     page: i32,
-) -> impl Future<Item = Body, Error = hyper::Error> {
+) -> impl Future<Item = Body, Error = Error> {
     let group = config.group.as_ref().expect("group not configured");
     let req = Request::builder()
         .uri(format!(
@@ -202,10 +212,16 @@ fn fetch_paged(
         .header("PRIVATE-TOKEN", access_token)
         .body(Body::empty())
         .unwrap();
-    client.request(req).and_then(|res| {
-        let body = res.into_body();
-        future::ok(body)
-    })
+    client
+        .request(req)
+        .map_err(|e| format_err!("req err: {}", e))
+        .and_then(|res| {
+            if !res.status().is_success() {
+                return future::err(format_err!("unsuccessful request"));
+            }
+            let body = res.into_body();
+            future::ok(body)
+        })
 }
 
 fn parse_filters(filters: &Vec<&str>) -> HashMap<String, String> {
