@@ -346,7 +346,6 @@ fn main() {
             if rm == "origin" {
                 println!("remote: {:?}", rm);
             }
-            println!("branch: {:?}", current_branch);
             actual_remote = String::from(
                 repo.find_remote(rm)
                     .expect("cant find remote")
@@ -359,25 +358,35 @@ fn main() {
 
         let project_future = fetch_projects(config, access_token, "projects".to_string()).and_then(
             move |projects: Vec<data::ProjectResponse>| {
+                let mut actual_project: Option<&data::ProjectResponse> = None;
                 for p in &projects {
                     if p.ssh_url_to_repo == repo_url {
-                        println!("Actual Project: {:?}", p);
+                        actual_project = Some(p);
+                        break;
                     }
                     if p.http_url_to_repo == repo_url {
-                        println!("Actual Project: {:?}", p);
+                        actual_project = Some(p);
+                        break;
                     }
                 }
-                // TODO: with current branch and repo url, create merge request
-                // TODO: Use https://gitlab.com/api/v4/users/mzupanmz/projects for fetching
-                // projects
-                // TODO make it configurable where the projects come from
+                println!("Actual Project: {:?}", actual_project);
+                println!("Current Branch: {:?}", current_branch);
+                let mut callbacks = RemoteCallbacks::new();
+                callbacks.credentials(git_credentials_callback);
+                callbacks.push_update_reference(|refname, status| {
+                    println!("updated refname: {:?}", refname);
+                    println!("updated status: {:?}", status);
+                    // TODO: create merge request in gitlab
+                    // https://docs.gitlab.com/ee/api/merge_requests.html#create-mr
+                    Ok(())
+                });
+                let mut push_opts = PushOptions::new();
+                push_opts.remote_callbacks(callbacks);
+                // TODO: git push, then with current branch and repo url, create merge request
                 future::ok(())
             },
         );
-        let result = rt::run(project_future);
-        println!("result: {:?}", result); // TODO: return result here
-                                          // TODO: fetch projects, THEN check if ssh_url_to_repo or http_url_to_repo match
-                                          // then, using remotes, select current project for creating an MR
+        rt::run(project_future);
         let statuses = repo
             .statuses(None)
             .expect("could not get git status of repository");
@@ -390,7 +399,6 @@ fn main() {
             }
         }
         let mut revwalk = repo.revwalk().expect("can't iterate revisions");
-        // TODO: log => https://github.com/rust-lang/git2-rs/blob/master/examples/log.rs
         println!("# iterating commits");
         revwalk.push_head().expect("cant push head to revwalk");
         // revwalk.for_each(|id| {
@@ -407,17 +415,6 @@ fn main() {
         println!("");
         println!("");
         println!("");
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(git_credentials_callback);
-        callbacks.push_update_reference(|refname, status| {
-            println!("updated refname: {:?}", refname);
-            println!("updated status: {:?}", status);
-            // TODO: create merge request in gitlab
-            // https://docs.gitlab.com/ee/api/merge_requests.html#create-mr
-            Ok(())
-        });
-        let mut push_opts = PushOptions::new();
-        push_opts.remote_callbacks(callbacks);
         // let remotes = repo.remotes().expect("can't list remotes");
         // remotes.iter().for_each(|remote| {
         //     let rm = remote.unwrap();
