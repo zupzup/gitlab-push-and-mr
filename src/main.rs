@@ -13,12 +13,11 @@ extern crate toml;
 use clap::{App, Arg, SubCommand};
 use failure::Error;
 use futures::future;
-use git2::{PushOptions, RemoteCallbacks, Repository, Status};
+use git2::{PushOptions, RemoteCallbacks, Repository};
 use hyper::client::HttpConnector;
 use hyper::rt::{self, Future, Stream};
 use hyper::{Body, Client, Request, Response};
 use hyper_tls::HttpsConnector;
-use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::prelude::*;
@@ -99,29 +98,6 @@ fn fetch_projects(
                 let bytes = b.concat2().wait().unwrap().into_bytes();
                 let mut data: Vec<data::ProjectResponse> =
                     serde_json::from_slice(&bytes).expect("can't parse data to project response");
-                result.append(&mut data);
-            }
-            return future::ok(result);
-        })
-        .map_err(|err| {
-            println!("Error: {}", err);
-        })
-}
-
-fn fetch_merge_requests(
-    config: Config,
-    access_token: String,
-    domain: String,
-) -> impl Future<Item = Vec<data::MergeRequestResponse>, Error = ()> {
-    fetch(config, access_token, domain, 20)
-        .and_then(|bodies| {
-            let mut result: Vec<data::MergeRequestResponse> = Vec::new();
-            for b in bodies {
-                let bytes = b.concat2().wait().unwrap().into_bytes(); // TODO: necessary? handle unwrap nicer
-                                                                      // https://github.com/hyperium/hyper/blob/e61fe540932c2e79ccabe3340e1471e357649e3c/examples/echo.rs
-                                                                      // https://github.com/hyperium/hyper/blob/271bba16672ff54a44e043c5cc1ae6b9345bb172/src/client/mod.rs#L51
-                let mut data: Vec<data::MergeRequestResponse> =
-                    serde_json::from_slice(&bytes).unwrap();
                 result.append(&mut data);
             }
             return future::ok(result);
@@ -224,53 +200,11 @@ fn fetch_paged(
         })
 }
 
-fn parse_filters(filters: &Vec<&str>) -> HashMap<String, String> {
-    let mut result = HashMap::new();
-    filters.iter().for_each(|f| {
-        let parsed = parse_filter(f).unwrap(); // TODO: handle none case
-        println!("parsed: {} {}", parsed.0, parsed.1);
-        result.insert(parsed.0.to_owned(), parsed.1.to_owned());
-    });
-    return result;
-}
-
-fn parse_filter(filter: &str) -> Option<(&str, &str)> {
-    // TODO: handle errors, wrong inputs
-    let parts: Vec<&str> = filter.split('=').collect();
-    return Some((parts.get(0).unwrap(), parts.get(1).unwrap()));
-}
-
 fn main() {
-    println!("Hello, CLG!");
     let matches = App::new("CLG")
         .version("1.0")
         .author("Mario Zupan")
-        .about("A GitLab Commandline Utility")
-        .subcommand(
-            SubCommand::with_name("list")
-                .about("Shows a list")
-                .arg(
-                    Arg::with_name("filters")
-                        .short("f")
-                        .long("filters")
-                        .takes_value(true)
-                        .use_delimiter(true)
-                        .multiple(true)
-                        .help("filters for entries"),
-                )
-                .arg(
-                    Arg::with_name("projects")
-                        .short("p")
-                        .long("projects")
-                        .help("list projects"),
-                )
-                .arg(
-                    Arg::with_name("merge-requests")
-                        .short("m")
-                        .long("mr")
-                        .help("list merge-requests"),
-                ),
-        )
+        .about("A GitLab Push and MR Utility")
         .subcommand(
             SubCommand::with_name("push-and-mr")
                 .about(
@@ -289,37 +223,7 @@ fn main() {
     println!("config: {:?}", config);
     let mr_config = get_mr_config().expect("could not read merge-request config");
 
-    if let Some(matches) = matches.subcommand_matches("list") {
-        if matches.is_present("filters") {
-            let filters = matches.values_of("filters").unwrap().collect::<Vec<_>>();
-            let parsed_filters = parse_filters(&filters);
-            println!("filters: {:?}", parsed_filters);
-        }
-        if matches.is_present("projects") {
-            println!("Listing Projects:");
-            let fut = fetch_projects(config, access_token, "projects".to_string()).and_then(
-                |projects: Vec<data::ProjectResponse>| {
-                    for p in &projects {
-                        println!("{:?}", p);
-                    }
-                    future::ok(())
-                },
-            );
-            rt::run(fut);
-        } else if matches.is_present("merge-requests") {
-            println!("Listing Merge Requests:");
-            let fut = fetch_merge_requests(config, access_token, "merge_requests".to_string())
-                .and_then(|merge_requests: Vec<data::MergeRequestResponse>| {
-                    for mr in &merge_requests {
-                        println!("{:?}", mr);
-                    }
-                    future::ok(())
-                });
-            rt::run(fut);
-        } else {
-            println!("You have to specify what to list")
-        }
-    } else if let Some(_) = matches.subcommand_matches("push-and-mr") {
+    if let Some(_) = matches.subcommand_matches("push-and-mr") {
         println!("Pushing and Creating Merge Request:");
         println!("With config: {:?}", mr_config);
         let repo = Repository::open("./").expect("current folder is not a git repository");
@@ -346,16 +250,26 @@ fn main() {
             if rm == "origin" {
                 println!("remote: {:?}", rm);
             }
-            actual_remote = String::from(
-                repo.find_remote(rm)
-                    .expect("cant find remote")
-                    .url()
-                    .unwrap(),
-            );
+            let mut origin_remote = repo.find_remote(rm).expect("cant find remote");
+            actual_remote = String::from(origin_remote.url().unwrap());
+            let mut push_opts = PushOptions::new();
+            let mut callbacks = RemoteCallbacks::new();
+            callbacks.credentials(git_credentials_callback);
+            callbacks.push_update_reference(|refname, status| {
+                println!("updated refname: {:?}", refname);
+                println!("updated status: {:?}", status);
+                Ok(())
+            });
+            push_opts.remote_callbacks(callbacks);
+            origin_remote
+                .push(
+                    &[&format!("refs/heads/{}", current_branch.to_string())],
+                    Some(&mut push_opts),
+                )
+                .expect("could not push to origin");
         });
         println!("actual remote: {:?}", actual_remote);
         let repo_url = String::from(actual_remote);
-
         let project_future = fetch_projects(config, access_token, "projects".to_string()).and_then(
             move |projects: Vec<data::ProjectResponse>| {
                 let mut actual_project: Option<&data::ProjectResponse> = None;
@@ -371,72 +285,10 @@ fn main() {
                 }
                 println!("Actual Project: {:?}", actual_project);
                 println!("Current Branch: {:?}", current_branch);
-                let mut callbacks = RemoteCallbacks::new();
-                callbacks.credentials(git_credentials_callback);
-                callbacks.push_update_reference(|refname, status| {
-                    println!("updated refname: {:?}", refname);
-                    println!("updated status: {:?}", status);
-                    // TODO: create merge request in gitlab
-                    // https://docs.gitlab.com/ee/api/merge_requests.html#create-mr
-                    Ok(())
-                });
-                let mut push_opts = PushOptions::new();
-                push_opts.remote_callbacks(callbacks);
-                // TODO: git push, then with current branch and repo url, create merge request
+                // TODO: with current branch and repo url, create merge request
                 future::ok(())
             },
         );
         rt::run(project_future);
-        let statuses = repo
-            .statuses(None)
-            .expect("could not get git status of repository");
-        println!("git status: {:?}", statuses.len());
-        for i in 0..statuses.len() {
-            let status = statuses.get(i).expect("could not get status");
-            if status.status() == Status::WT_MODIFIED {
-                println!("MODIFIED: git status: {:?}", status.status());
-                println!("git path: {:?}", status.path().unwrap_or("fail"));
-            }
-        }
-        let mut revwalk = repo.revwalk().expect("can't iterate revisions");
-        println!("# iterating commits");
-        revwalk.push_head().expect("cant push head to revwalk");
-        // revwalk.for_each(|id| {
-        //     let oid = id.unwrap();
-        //     println!("oid: {:?}", oid);
-        //     let commit = repo.find_commit(oid).expect("can't find commit for oid");
-        //     println!("commit: {:?}", commit);
-        //     println!("commit message: {:?}", commit.message());
-        //     println!("commit: {:?}", commit.message());
-        //     let tree = commit.tree().expect("can't fetch tree for commit");
-        //     println!("tree: {:?}", tree);
-        // });
-        println!("");
-        println!("");
-        println!("");
-        println!("");
-        // let remotes = repo.remotes().expect("can't list remotes");
-        // remotes.iter().for_each(|remote| {
-        //     let rm = remote.unwrap();
-        //     if rm == "origin" {
-        //         println!("remote: {:?}", rm);
-        //     }
-        //     println!("branch: {:?}", current_branch);
-        //     let mut actual_remote = repo.find_remote(rm).expect("cant find remote");
-        //     // TODO: find out current project by using remote URL!
-        //     println!("actual remote: {:?}", actual_remote.url());
-        //     // println!("Current Repository: {:?}", repo)
-        //     actual_remote
-        //         .push(
-        //             &[&format!("refs/heads/{}", current_branch.to_string())],
-        //             Some(&mut push_opts),
-        //         )
-        //         .expect("could not push to origin");
-        // });
-        // TODO: if files are INDEX_MODIFIED, notify that stuff is unstaged
-        // TODO: make sure mr.toml is read and there is a merge-request config
-        // also, ask before executing, showing a summary before
-        // then, push the changes, and using the MR ID from the response, create an MR based on a
-        // mr.toml file using the API
     }
 }
