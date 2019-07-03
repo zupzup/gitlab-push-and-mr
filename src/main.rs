@@ -4,13 +4,11 @@ extern crate hyper;
 extern crate hyper_tls;
 #[macro_use]
 extern crate serde_derive;
-extern crate clap;
 extern crate futures;
 extern crate serde;
 extern crate serde_json;
 extern crate toml;
 
-use clap::{App, Arg, SubCommand};
 use failure::Error;
 use futures::future;
 use git2::{PushOptions, RemoteCallbacks, Repository};
@@ -200,95 +198,84 @@ fn fetch_paged(
         })
 }
 
+fn get_current_branch(repo: &Repository) -> String {
+    let mut result: String = String::from("");
+    let branches = repo.branches(None).expect("can't list branches");
+    branches.for_each(|branch| {
+        // TODO: use fold
+        let b = branch.unwrap();
+        println!("branch: {:?}", b.0.name());
+        println!("current: {:?}", b.0.is_head());
+        println!("remote or local: {:?}", b.1);
+        if b.0.is_head() {
+            result =
+                b.0.name()
+                    .expect("cant set current branch")
+                    .unwrap()
+                    .to_string(); // TODO: handle errors
+        }
+    });
+    return result;
+}
+
 fn main() {
-    let matches = App::new("CLG")
-        .version("1.0")
-        .author("Mario Zupan")
-        .about("A GitLab Push and MR Utility")
-        .subcommand(
-            SubCommand::with_name("push-and-mr")
-                .about(
-                    "Pushes and creates a Merge-Request automatically based on a predefined config",
-                )
-                .arg(
-                    Arg::with_name("description")
-                        .short("d")
-                        .long("description")
-                        .help("the description for the MR"),
-                ),
-        )
-        .get_matches();
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
     println!("config: {:?}", config);
     let mr_config = get_mr_config().expect("could not read merge-request config");
 
-    if let Some(_) = matches.subcommand_matches("push-and-mr") {
-        println!("Pushing and Creating Merge Request:");
-        println!("With config: {:?}", mr_config);
-        let repo = Repository::open("./").expect("current folder is not a git repository");
-        let mut current_branch: String = "".to_string();
-        let branches = repo.branches(None).expect("can't list branches");
-        branches.for_each(|branch| {
-            let b = branch.unwrap();
-            println!("branch: {:?}", b.0.name());
-            println!("current: {:?}", b.0.is_head());
-            println!("remote or local: {:?}", b.1);
-            if b.0.is_head() {
-                current_branch =
-                    b.0.name()
-                        .expect("cant set current branch")
-                        .unwrap()
-                        .to_string(); // TODO: handle errors
-            }
-        });
+    println!("Pushing and Creating Merge Request:");
+    println!("With config: {:?}", mr_config);
 
-        let remotes = repo.remotes().expect("can't list remotes");
-        let mut actual_remote: String = "".to_string();
-        remotes.iter().for_each(|remote| {
-            let rm = remote.unwrap();
-            if rm == "origin" {
-                println!("remote: {:?}", rm);
-            }
-            let mut origin_remote = repo.find_remote(rm).expect("cant find remote");
-            actual_remote = String::from(origin_remote.url().unwrap());
-            let mut push_opts = PushOptions::new();
-            let mut callbacks = RemoteCallbacks::new();
-            callbacks.credentials(git_credentials_callback);
-            callbacks.push_update_reference(|refname, status| {
-                println!("updated refname: {:?}", refname);
-                println!("updated status: {:?}", status);
-                Ok(())
-            });
-            push_opts.remote_callbacks(callbacks);
-            origin_remote
-                .push(
-                    &[&format!("refs/heads/{}", current_branch.to_string())],
-                    Some(&mut push_opts),
-                )
-                .expect("could not push to origin");
+    let repo = Repository::open("./").expect("current folder is not a git repository");
+    let current_branch = get_current_branch(&repo);
+
+    let remotes = repo.remotes().expect("can't list remotes");
+    let mut actual_remote: String = "".to_string();
+    // TODO: move finding origin remote to helper function
+    remotes.iter().for_each(|remote| {
+        let rm = remote.unwrap();
+        if rm == "origin" {
+            println!("remote: {:?}", rm);
+        }
+        let mut origin_remote = repo.find_remote(rm).expect("cant find remote");
+        actual_remote = String::from(origin_remote.url().unwrap());
+        let mut push_opts = PushOptions::new();
+        let mut callbacks = RemoteCallbacks::new();
+        callbacks.credentials(git_credentials_callback);
+        callbacks.push_update_reference(|refname, status| {
+            println!("updated refname: {:?}", refname);
+            println!("updated status: {:?}", status);
+            Ok(())
         });
-        println!("actual remote: {:?}", actual_remote);
-        let repo_url = String::from(actual_remote);
-        let project_future = fetch_projects(config, access_token, "projects".to_string()).and_then(
-            move |projects: Vec<data::ProjectResponse>| {
-                let mut actual_project: Option<&data::ProjectResponse> = None;
-                for p in &projects {
-                    if p.ssh_url_to_repo == repo_url {
-                        actual_project = Some(p);
-                        break;
-                    }
-                    if p.http_url_to_repo == repo_url {
-                        actual_project = Some(p);
-                        break;
-                    }
+        push_opts.remote_callbacks(callbacks);
+        origin_remote
+            .push(
+                &[&format!("refs/heads/{}", current_branch.to_string())],
+                Some(&mut push_opts),
+            )
+            .expect("could not push to origin");
+    });
+    println!("actual remote: {:?}", actual_remote);
+    let repo_url = String::from(actual_remote);
+    let project_future = fetch_projects(config, access_token, "projects".to_string()).and_then(
+        move |projects: Vec<data::ProjectResponse>| {
+            let mut actual_project: Option<&data::ProjectResponse> = None;
+            for p in &projects {
+                if p.ssh_url_to_repo == repo_url {
+                    actual_project = Some(p);
+                    break;
                 }
-                println!("Actual Project: {:?}", actual_project);
-                println!("Current Branch: {:?}", current_branch);
-                // TODO: with current branch and repo url, create merge request
-                future::ok(())
-            },
-        );
-        rt::run(project_future);
-    }
+                if p.http_url_to_repo == repo_url {
+                    actual_project = Some(p);
+                    break;
+                }
+            }
+            println!("Actual Project: {:?}", actual_project);
+            println!("Current Branch: {:?}", current_branch);
+            // TODO: with current branch and repo url, create merge request
+            future::ok(())
+        },
+    );
+    rt::run(project_future);
 }
