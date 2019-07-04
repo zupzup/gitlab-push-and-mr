@@ -11,7 +11,7 @@ extern crate toml;
 
 use failure::Error;
 use futures::future;
-use git2::{PushOptions, RemoteCallbacks, Repository};
+use git2::{PushOptions, Remote, RemoteCallbacks, Repository};
 use hyper::client::HttpConnector;
 use hyper::rt::{self, Future, Stream};
 use hyper::{Body, Client, Request, Response};
@@ -218,6 +218,19 @@ fn get_current_branch(repo: &Repository) -> String {
     return result;
 }
 
+fn get_remote(repo: &Repository) -> Option<Remote> {
+    let remotes = repo.remotes().expect("can't list remotes");
+    for remote in remotes.iter() {
+        let rm = remote.unwrap();
+        if rm == "origin" {
+            println!("remote: {:?}", rm);
+        }
+        let origin_remote = repo.find_remote(rm).expect("cant find remote");
+        return Some(origin_remote);
+    }
+    return None;
+}
+
 fn main() {
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
@@ -229,33 +242,24 @@ fn main() {
 
     let repo = Repository::open("./").expect("current folder is not a git repository");
     let current_branch = get_current_branch(&repo);
+    let mut remote = get_remote(&repo).expect("origin remote could not be found");
 
-    let remotes = repo.remotes().expect("can't list remotes");
-    let mut actual_remote: String = "".to_string();
-    // TODO: move finding origin remote to helper function
-    remotes.iter().for_each(|remote| {
-        let rm = remote.unwrap();
-        if rm == "origin" {
-            println!("remote: {:?}", rm);
-        }
-        let mut origin_remote = repo.find_remote(rm).expect("cant find remote");
-        actual_remote = String::from(origin_remote.url().unwrap());
-        let mut push_opts = PushOptions::new();
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(git_credentials_callback);
-        callbacks.push_update_reference(|refname, status| {
-            println!("updated refname: {:?}", refname);
-            println!("updated status: {:?}", status);
-            Ok(())
-        });
-        push_opts.remote_callbacks(callbacks);
-        origin_remote
-            .push(
-                &[&format!("refs/heads/{}", current_branch.to_string())],
-                Some(&mut push_opts),
-            )
-            .expect("could not push to origin");
+    let mut push_opts = PushOptions::new();
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(git_credentials_callback);
+    callbacks.push_update_reference(|refname, status| {
+        println!("updated refname: {:?}", refname);
+        println!("updated status: {:?}", status);
+        Ok(())
     });
+    push_opts.remote_callbacks(callbacks);
+    remote
+        .push(
+            &[&format!("refs/heads/{}", current_branch.to_string())],
+            Some(&mut push_opts),
+        )
+        .expect("could not push to origin");
+    let actual_remote = String::from(remote.url().unwrap());
     println!("actual remote: {:?}", actual_remote);
     let repo_url = String::from(actual_remote);
     let project_future = fetch_projects(config, access_token, "projects".to_string()).and_then(
