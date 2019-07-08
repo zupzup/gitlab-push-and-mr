@@ -4,11 +4,13 @@ extern crate hyper;
 extern crate hyper_tls;
 #[macro_use]
 extern crate serde_derive;
+extern crate clap;
 extern crate futures;
 extern crate serde;
 extern crate serde_json;
 extern crate toml;
 
+use clap::{App, Arg};
 use failure::Error;
 use futures::future;
 use git2::{PushOptions, Remote, RemoteCallbacks, Repository};
@@ -198,24 +200,24 @@ fn fetch_paged(
         })
 }
 
+// TODO: handle errors
 fn get_current_branch(repo: &Repository) -> String {
-    let mut result: String = String::from("");
     let branches = repo.branches(None).expect("can't list branches");
-    branches.for_each(|branch| {
-        // TODO: use fold
-        let b = branch.unwrap();
+    return branches.fold("".to_string(), |acc, branch| {
+        let b = branch.expect("can't access branch");
         println!("branch: {:?}", b.0.name());
         println!("current: {:?}", b.0.is_head());
         println!("remote or local: {:?}", b.1);
         if b.0.is_head() {
-            result =
-                b.0.name()
-                    .expect("cant set current branch")
-                    .unwrap()
-                    .to_string(); // TODO: handle errors
+            return b
+                .0
+                .name()
+                .expect("result of name failed")
+                .expect("name is none")
+                .to_string();
         }
+        return acc;
     });
-    return result;
 }
 
 fn get_remote(repo: &Repository) -> Option<Remote> {
@@ -232,6 +234,19 @@ fn get_remote(repo: &Repository) -> Option<Remote> {
 }
 
 fn main() {
+    let matches = App::new("Gitlab Push-and-MR")
+        .version("1.0")
+        .arg(
+            Arg::with_name("description")
+                .short("d")
+                .long("description")
+                .value_name("DESCRIPTION")
+                .help("The Merge-Request description")
+                .takes_value(true),
+        )
+        .get_matches();
+    let description = matches.value_of("description").unwrap_or("");
+    println!("description: {}", description);
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
     println!("config: {:?}", config);

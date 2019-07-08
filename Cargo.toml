@@ -14,5 +14,6 @@ serde_json = "1.0"
 futures = "0.1.13"
 toml = "0.5"
 git2 = "0.9.1"
+clap = "2.33.0"
 
 
