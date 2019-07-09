@@ -246,14 +246,12 @@ fn main() {
         )
         .get_matches();
     let description = matches.value_of("description").unwrap_or("");
-    println!("description: {}", description);
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
-    println!("config: {:?}", config);
     let mr_config = get_mr_config().expect("could not read merge-request config");
-
-    println!("Pushing and Creating Merge Request:");
-    println!("With config: {:?}", mr_config);
+    println!("config: {:?}", config);
+    println!("description: {}", description);
+    println!("With MR config: {:?}", mr_config);
 
     let repo = Repository::open("./").expect("current folder is not a git repository");
     let current_branch = get_current_branch(&repo);
