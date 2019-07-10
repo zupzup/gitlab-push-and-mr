@@ -41,6 +41,16 @@ struct MRConfig {
     labels: Option<Vec<String>>,
 }
 
+// TODO: use references
+struct MRRequest<'a> {
+    access_token: String,
+    project: &'a data::ProjectResponse,
+    title: String,
+    description: String,
+    source_branch: String,
+    target_branch: String,
+}
+
 fn git_credentials_callback(
     _user: &str,
     user_from_url: Option<&str>,
@@ -90,7 +100,7 @@ fn fetch_projects(
     config: Config,
     access_token: String,
     domain: String,
-) -> impl Future<Item = Vec<data::ProjectResponse>, Error = ()> {
+) -> impl Future<Item = Vec<data::ProjectResponse>, Error = Error> {
     fetch(config, access_token, domain, 20)
         .and_then(|bodies| {
             let mut result: Vec<data::ProjectResponse> = Vec::new();
@@ -104,6 +114,7 @@ fn fetch_projects(
         })
         .map_err(|err| {
             println!("Error: {}", err);
+            err
         })
 }
 
@@ -200,6 +211,12 @@ fn fetch_paged(
         })
 }
 
+fn create_mr(req: &MRRequest) -> impl Future<Item = Body, Error = Error> {
+    let https = HttpsConnector::new(4).unwrap();
+    let client = Client::builder().build::<_, hyper::Body>(https);
+    return future::err(format_err!("unsuccessful request"));
+}
+
 // TODO: handle errors
 fn get_current_branch(repo: &Repository) -> String {
     let branches = repo.branches(None).expect("can't list branches");
@@ -244,14 +261,35 @@ fn main() {
                 .help("The Merge-Request description")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("title")
+                .short("t")
+                .long("title")
+                .value_name("TITLE")
+                .help("The Merge-Request title")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("target")
+                .short("tb")
+                .long("target-branch")
+                .value_name("TARGETBRANCH")
+                .help("The Merge-Request target branch")
+                .takes_value(true),
+        )
         .get_matches();
     let description = matches.value_of("description").unwrap_or("");
+    let title = matches.value_of("title").unwrap_or("");
+    let target_branch = matches.value_of("target_branch").unwrap_or("");
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
     let mr_config = get_mr_config().expect("could not read merge-request config");
     println!("config: {:?}", config);
     println!("description: {}", description);
+    println!("target branch: {}", target_branch);
+    println!("title: {}", title);
     println!("With MR config: {:?}", mr_config);
+    // TODO: if no title is there, use last commit message
 
     let repo = Repository::open("./").expect("current folder is not a git repository");
     let current_branch = get_current_branch(&repo);
@@ -275,8 +313,12 @@ fn main() {
     let actual_remote = String::from(remote.url().unwrap());
     println!("actual remote: {:?}", actual_remote);
     let repo_url = String::from(actual_remote);
-    let project_future = fetch_projects(config, access_token, "projects".to_string()).and_then(
-        move |projects: Vec<data::ProjectResponse>| {
+    let access_token_copy = access_token.clone();
+    let title_clone = title.to_owned();
+    let desc_clone = description.to_owned();
+    let target_branch_clone = target_branch.to_owned();
+    let fut = fetch_projects(config, access_token, "projects".to_string())
+        .and_then(move |projects: Vec<data::ProjectResponse>| {
             let mut actual_project: Option<&data::ProjectResponse> = None;
             for p in &projects {
                 if p.ssh_url_to_repo == repo_url {
@@ -290,9 +332,23 @@ fn main() {
             }
             println!("Actual Project: {:?}", actual_project);
             println!("Current Branch: {:?}", current_branch);
-            // TODO: with current branch and repo url, create merge request
-            future::ok(())
-        },
-    );
-    rt::run(project_future);
+            let project = actual_project.unwrap(); // TODO handle error
+            let mr_req = MRRequest {
+                access_token: access_token_copy,
+                project: project,
+                title: title_clone,
+                description: desc_clone,
+                source_branch: current_branch,
+                target_branch: target_branch_clone,
+            };
+            return create_mr(&mr_req);
+        })
+        .map_err(|e| {
+            println!("mr creation error: {:?}", e);
+        })
+        .and_then(|mr_res| {
+            println!("mr creation result: {:?}", mr_res);
+            return future::ok(());
+        });
+    rt::run(fut);
 }
