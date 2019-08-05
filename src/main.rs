@@ -16,7 +16,7 @@ use futures::future;
 use git2::{PushOptions, Remote, RemoteCallbacks, Repository};
 use hyper::client::HttpConnector;
 use hyper::rt::{self, Future, Stream};
-use hyper::{Body, Client, Request, Response};
+use hyper::{Body, Client, Method, Request, Response};
 use hyper_tls::HttpsConnector;
 use std::env;
 use std::fs::{self, File};
@@ -42,9 +42,19 @@ struct MRConfig {
 }
 
 // TODO: use references
+#[derive(Debug, Serialize, Clone)]
 struct MRRequest<'a> {
     access_token: String,
     project: &'a data::ProjectResponse,
+    title: String,
+    description: String,
+    source_branch: String,
+    target_branch: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct MRPayload {
+    id: String,
     title: String,
     description: String,
     source_branch: String,
@@ -211,10 +221,42 @@ fn fetch_paged(
         })
 }
 
-fn create_mr(req: &MRRequest) -> impl Future<Item = Body, Error = Error> {
+fn create_mr(payload: &MRRequest, access_token: &str) -> impl Future<Item = Body, Error = Error> {
+    println!("body: {:?}", payload);
     let https = HttpsConnector::new(4).unwrap();
     let client = Client::builder().build::<_, hyper::Body>(https);
-    return future::err(format_err!("unsuccessful request"));
+    let uri = format!(
+        "https://gitlab.com/api/v4/projects/{}/merge_requests",
+        payload.project.id
+    );
+    let mr_payload = MRPayload {
+        id: format!("{}", payload.project.id),
+        title: payload.title.clone(),
+        description: payload.description.clone(),
+        target_branch: payload.target_branch.clone(),
+        source_branch: payload.source_branch.clone(),
+    };
+    let json = serde_json::to_string(&mr_payload).unwrap(); // TODO: error handling
+    println!("json: {}, uri: {}", json, uri);
+    let req = Request::builder()
+        .uri(uri)
+        .header("PRIVATE-TOKEN", access_token.to_owned())
+        .header("Content-Type", "application/json")
+        .method(Method::POST)
+        .body(Body::from(json))
+        .unwrap();
+    client
+        .request(req)
+        .map_err(|e| format_err!("req err: {}", e))
+        .and_then(move |res: Response<Body>| {
+            println!("create mr resp: {}", res.status());
+            if !res.status().is_success() {
+                return future::err(format_err!("unsuccessful create mr request"));
+            }
+            let body = res.into_body();
+            future::ok(body)
+        })
+        .map_err(|e| format_err!("requests error: {}", e))
 }
 
 // TODO: handle errors
@@ -270,8 +312,8 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("target")
-                .short("tb")
+            Arg::with_name("target_branch")
+                .short("b")
                 .long("target-branch")
                 .value_name("TARGETBRANCH")
                 .help("The Merge-Request target branch")
@@ -314,6 +356,7 @@ fn main() {
     println!("actual remote: {:?}", actual_remote);
     let repo_url = String::from(actual_remote);
     let access_token_copy = access_token.clone();
+    let mr_access_token = access_token.clone();
     let title_clone = title.to_owned();
     let desc_clone = description.to_owned();
     let target_branch_clone = target_branch.to_owned();
@@ -341,13 +384,12 @@ fn main() {
                 source_branch: current_branch,
                 target_branch: target_branch_clone,
             };
-            return create_mr(&mr_req);
+            return create_mr(&mr_req, &mr_access_token);
         })
         .map_err(|e| {
             println!("mr creation error: {:?}", e);
         })
-        .and_then(|mr_res| {
-            println!("mr creation result: {:?}", mr_res);
+        .and_then(|_| {
             return future::ok(());
         });
     rt::run(fut);
