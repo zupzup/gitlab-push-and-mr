@@ -28,13 +28,18 @@ pub struct Author {
     pub username: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct MergeRequestPayload {
+#[derive(Debug, Deserialize)]
+pub struct MRResponse {
+    pub web_url: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MRPayload {
     pub id: String,
-    pub source_branch: String,
-    pub target_branch: String,
     pub title: String,
     pub description: String,
+    pub source_branch: String,
+    pub target_branch: String,
     pub labels: String,
     pub remove_source_branch: bool,
     pub squash: bool,
