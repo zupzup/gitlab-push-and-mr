@@ -87,13 +87,13 @@ fn get_access_token() -> Result<String, Error> {
 fn get_config() -> Result<Config, Error> {
     let data = fs::read_to_string(CONFIG_FILE)?;
     let config: Config = toml::from_str(&data)?;
-    return Ok(config);
+    Ok(config)
 }
 
 fn get_mr_config() -> Result<MRConfig, Error> {
     let data = fs::read_to_string(MR_CONFIG_FILE)?;
     let config: MRConfig = toml::from_str(&data)?;
-    return Ok(config);
+    Ok(config)
 }
 
 fn fetch_projects(
@@ -110,7 +110,7 @@ fn fetch_projects(
                     serde_json::from_slice(&bytes).expect("can't parse data to project response");
                 result.append(&mut data);
             }
-            return future::ok(result);
+            future::ok(result)
         })
         .map_err(|err| err)
 }
@@ -150,7 +150,7 @@ fn fetch(
             if !res.status().is_success() {
                 return future::err(format_err!("unsuccessful fetch request: {}", res.status()));
             }
-            return future::ok(res);
+            future::ok(res)
         })
         .and_then(move |res: Response<Body>| {
             let mut result: Vec<Body> = Vec::new();
@@ -171,14 +171,14 @@ fn fetch(
             for page in 2..=p {
                 futrs.push(fetch_paged(&config, &access_token, &domain, &client, page));
             }
-            return future::join_all(futrs)
+            future::join_all(futrs)
                 .and_then(move |bodies| {
                     for b in bodies {
                         result.push(b);
                     }
-                    return future::ok(result);
+                    future::ok(result)
                 })
-                .map_err(|e| format_err!("requests error: {}", e));
+                .map_err(|e| format_err!("requests error: {}", e))
         })
 }
 
@@ -236,7 +236,7 @@ fn create_mr(
         description: payload.description.clone(),
         target_branch: payload.target_branch.clone(),
         source_branch: payload.source_branch.clone(),
-        labels: labels,
+        labels,
         squash: true,
         remove_source_branch: true,
     };
@@ -265,7 +265,7 @@ fn create_mr(
             let bytes = body.concat2().wait().unwrap().into_bytes();
             let data: data::MRResponse =
                 serde_json::from_slice(&bytes).expect("can't parse data to merge request response");
-            return future::ok(data.web_url);
+            future::ok(data.web_url)
         })
         .map_err(|e| format_err!("requests error: {}", e))
 }
@@ -283,7 +283,7 @@ fn get_current_branch(repo: &Repository) -> Result<String, Error> {
                     None => return acc,
                 };
             }
-            return acc;
+            acc
         },
     )
 }
@@ -375,20 +375,20 @@ fn main() {
             let project = actual_project.expect("couldn't find this project on gitlab");
             let mr_req = MRRequest {
                 access_token: mr_access_token,
-                project: project,
+                project,
                 title: title_clone,
                 description: desc_clone,
                 source_branch: current_branch,
                 target_branch: target_branch_clone,
             };
-            return create_mr(&mr_req, &mr_config);
+            create_mr(&mr_req, &mr_config)
         })
         .map_err(|e| {
             println!("Could not create MR, Error: {}", e);
         })
         .and_then(|url: String| {
             println!("Pushed and Created MR Successfully - URL: {}", url);
-            return future::ok(());
+            future::ok(())
         });
     rt::run(fut);
 }
