@@ -11,45 +11,21 @@ extern crate serde_json;
 extern crate toml;
 
 use clap::{App, Arg};
+use data::{Config, MRRequest, ProjectResponse};
 use failure::Error;
 use futures::future;
 use git2::{PushOptions, RemoteCallbacks, Repository};
-use hyper::client::HttpConnector;
-use hyper::rt::{self, Future, Stream};
-use hyper::{Body, Client, Method, Request, Response};
-use hyper_tls::HttpsConnector;
+use hyper::rt::{self, Future};
 use std::env;
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::io::BufReader;
 
 mod data;
+mod http;
 
 const SECRETS_FILE: &str = "./.secret";
-const CONFIG_FILE: &str = "./.config.toml";
-const MR_CONFIG_FILE: &str = "./mr.toml";
-const SSH_KEY_FILE: &str = "~/.ssh/id_rsa";
-
-#[derive(Debug, Deserialize, Clone)]
-struct Config {
-    group: Option<String>,
-    user: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct MRConfig {
-    labels: Option<Vec<String>>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct MRRequest<'a> {
-    access_token: String,
-    project: &'a data::ProjectResponse,
-    title: String,
-    description: String,
-    source_branch: String,
-    target_branch: String,
-}
+const CONFIG_FILE: &str = "./config.toml";
 
 fn git_credentials_callback(
     _user: &str,
@@ -61,11 +37,12 @@ fn git_credentials_callback(
     if cred.contains(git2::CredentialType::USERNAME) {
         return git2::Cred::username(user);
     }
+    let key_file = env::var("SSH_KEY_FILE").expect("no ssh key file provided");
     let passphrase = env::var("SSH_PASS").expect("no ssh pass provided");
     git2::Cred::ssh_key(
         user,
         None,
-        std::path::Path::new(SSH_KEY_FILE),
+        std::path::Path::new(&key_file),
         Some(&passphrase),
     )
 }
@@ -90,186 +67,6 @@ fn get_config() -> Result<Config, Error> {
     Ok(config)
 }
 
-fn get_mr_config() -> Result<MRConfig, Error> {
-    let data = fs::read_to_string(MR_CONFIG_FILE)?;
-    let config: MRConfig = toml::from_str(&data)?;
-    Ok(config)
-}
-
-fn fetch_projects(
-    config: Config,
-    access_token: String,
-    domain: String,
-) -> impl Future<Item = Vec<data::ProjectResponse>, Error = Error> {
-    fetch(config, access_token, domain, 20)
-        .and_then(|bodies| {
-            let mut result: Vec<data::ProjectResponse> = Vec::new();
-            for b in bodies {
-                let bytes = b.concat2().wait().unwrap().into_bytes();
-                let mut data: Vec<data::ProjectResponse> =
-                    serde_json::from_slice(&bytes).expect("can't parse data to project response");
-                result.append(&mut data);
-            }
-            future::ok(result)
-        })
-        .map_err(|err| err)
-}
-
-fn fetch(
-    config: Config,
-    access_token: String,
-    domain: String,
-    per_page: i32,
-) -> impl Future<Item = Vec<Body>, Error = Error> {
-    let https = HttpsConnector::new(4).expect("https connector works");
-    let client = Client::builder().build::<_, hyper::Body>(https);
-    let group = config.group.as_ref();
-    let user = config.user.as_ref();
-    let uri = match group {
-        Some(v) => format!(
-            "https://gitlab.com/api/v4/groups/{}/{}?per_page={}",
-            v, domain, per_page
-        ),
-        None => match user {
-            Some(u) => format!(
-                "https://gitlab.com/api/v4/users/{}/{}?per_page={}",
-                u, domain, per_page
-            ),
-            None => "invalid url".to_string(),
-        },
-    };
-    let req = Request::builder()
-        .uri(uri)
-        .header("PRIVATE-TOKEN", access_token.to_owned())
-        .body(Body::empty())
-        .expect("request creation works");
-    client
-        .request(req)
-        .map_err(|e| format_err!("req err: {}", e))
-        .and_then(move |res: Response<Body>| {
-            if !res.status().is_success() {
-                return future::err(format_err!("unsuccessful fetch request: {}", res.status()));
-            }
-            future::ok(res)
-        })
-        .and_then(move |res: Response<Body>| {
-            let mut result: Vec<Body> = Vec::new();
-            let pages: &str = match res.headers().get("x-total-pages") {
-                Some(v) => match v.to_str() {
-                    Ok(v) => v,
-                    _ => "0",
-                },
-                None => "0",
-            };
-            let p = match pages.parse::<i32>() {
-                Ok(v) => v,
-                Err(_) => 0,
-            };
-            let body: Body = res.into_body();
-            result.push(body);
-            let mut futrs = Vec::new();
-            for page in 2..=p {
-                futrs.push(fetch_paged(&config, &access_token, &domain, &client, page));
-            }
-            future::join_all(futrs)
-                .and_then(move |bodies| {
-                    for b in bodies {
-                        result.push(b);
-                    }
-                    future::ok(result)
-                })
-                .map_err(|e| format_err!("requests error: {}", e))
-        })
-}
-
-fn fetch_paged(
-    config: &Config,
-    access_token: &str,
-    domain: &str,
-    client: &hyper::Client<HttpsConnector<HttpConnector>>,
-    page: i32,
-) -> impl Future<Item = Body, Error = Error> {
-    let group = config.group.as_ref().expect("group is configured");
-    let req = Request::builder()
-        .uri(format!(
-            "https://gitlab.com/api/v4/groups/{}/{}?per_page=20&page={}",
-            group, domain, page
-        ))
-        .header("PRIVATE-TOKEN", access_token)
-        .body(Body::empty())
-        .expect("request can be created");
-    client
-        .request(req)
-        .map_err(|e| format_err!("req err: {}", e))
-        .and_then(|res| {
-            if !res.status().is_success() {
-                return future::err(format_err!(
-                    "unsuccessful fetch paged request: {}",
-                    res.status()
-                ));
-            }
-            let body = res.into_body();
-            future::ok(body)
-        })
-}
-
-fn create_mr(
-    payload: &MRRequest,
-    mr_config: &MRConfig,
-) -> impl Future<Item = String, Error = Error> {
-    let https = HttpsConnector::new(4).expect("https connector works");
-    let client = Client::builder().build::<_, hyper::Body>(https);
-    let uri = format!(
-        "https://gitlab.com/api/v4/projects/{}/merge_requests",
-        payload.project.id
-    );
-    let labels = mr_config
-        .labels
-        .as_ref()
-        .unwrap_or(&Vec::new())
-        .iter()
-        .fold(String::new(), |acc, l| format!("{}, {}", acc, l));
-
-    let mr_payload = data::MRPayload {
-        id: format!("{}", payload.project.id),
-        title: payload.title.clone(),
-        description: payload.description.clone(),
-        target_branch: payload.target_branch.clone(),
-        source_branch: payload.source_branch.clone(),
-        labels,
-        squash: true,
-        remove_source_branch: true,
-    };
-    let json = serde_json::to_string(&mr_payload).expect("payload can be stringified");
-    let req = Request::builder()
-        .uri(uri)
-        .header("PRIVATE-TOKEN", payload.access_token.to_owned())
-        .header("Content-Type", "application/json")
-        .method(Method::POST)
-        .body(Body::from(json))
-        .expect("request can be created");
-    client
-        .request(req)
-        .map_err(|e| format_err!("req err: {}", e))
-        .and_then(move |res: Response<Body>| {
-            if !res.status().is_success() {
-                return future::err(format_err!(
-                    "unsuccessful create mr request: {}",
-                    res.status()
-                ));
-            }
-            let body = res.into_body();
-            future::ok(body)
-        })
-        .and_then(|body: Body| {
-            let bytes = body.concat2().wait().unwrap().into_bytes();
-            let data: data::MRResponse =
-                serde_json::from_slice(&bytes).expect("can't parse data to merge request response");
-            future::ok(data.web_url)
-        })
-        .map_err(|e| format_err!("requests error: {}", e))
-}
-
 fn get_current_branch(repo: &Repository) -> Result<String, Error> {
     let branches = repo.branches(None).expect("can't list branches");
     branches.fold(
@@ -286,6 +83,49 @@ fn get_current_branch(repo: &Repository) -> Result<String, Error> {
             acc
         },
     )
+}
+
+fn create_mr(
+    config: Config,
+    actual_remote: String,
+    access_token: String,
+    title: String,
+    description: String,
+    target_branch: String,
+    current_branch: String,
+) {
+    let fut = http::fetch_projects(config.clone(), access_token.clone(), "projects".to_string())
+        .and_then(move |projects: Vec<ProjectResponse>| {
+            let mut actual_project: Option<&ProjectResponse> = None;
+            for p in &projects {
+                if p.ssh_url_to_repo == actual_remote {
+                    actual_project = Some(p);
+                    break;
+                }
+                if p.http_url_to_repo == actual_remote {
+                    actual_project = Some(p);
+                    break;
+                }
+            }
+            let project = actual_project.expect("couldn't find this project on gitlab");
+            let mr_req = MRRequest {
+                access_token: access_token,
+                project,
+                title: title,
+                description: description,
+                source_branch: current_branch,
+                target_branch: target_branch,
+            };
+            http::create_mr(&mr_req, &config)
+        })
+        .map_err(|e| {
+            println!("Could not create MR, Error: {}", e);
+        })
+        .and_then(|url: String| {
+            println!("Pushed and Created MR Successfully - URL: {}", url);
+            future::ok(())
+        });
+    rt::run(fut);
 }
 
 fn main() {
@@ -325,7 +165,6 @@ fn main() {
 
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
-    let mr_config = get_mr_config().expect("could not read merge-request config");
 
     if config.group.is_none() && config.user.is_none() {
         panic!("Group or User for Gitlab need to be configured")
@@ -339,9 +178,21 @@ fn main() {
 
     let mut push_opts = PushOptions::new();
     let mut callbacks = RemoteCallbacks::new();
+    let actual_remote = String::from(remote.url().expect("could not get remote URL"));
+    let remote_clone = actual_remote.clone();
+    let branch_clone = current_branch.clone();
     callbacks.credentials(git_credentials_callback);
-    callbacks.push_update_reference(|refname, _| {
+    callbacks.push_update_reference(move |refname, _| {
         println!("Successfully Pushed: {:?}", refname);
+        create_mr(
+            config.clone(),
+            remote_clone.clone(),
+            access_token.clone(),
+            title.to_owned(),
+            description.to_owned(),
+            target_branch.to_owned(),
+            branch_clone.clone(),
+        );
         Ok(())
     });
     push_opts.remote_callbacks(callbacks);
@@ -351,44 +202,4 @@ fn main() {
             Some(&mut push_opts),
         )
         .expect("could not push to origin");
-    let actual_remote = String::from(remote.url().expect("could not get remote URL"));
-
-    let mr_access_token = access_token.clone();
-
-    let title_clone = title.to_owned();
-    let desc_clone = description.to_owned();
-    let target_branch_clone = target_branch.to_owned();
-
-    let fut = fetch_projects(config, access_token, "projects".to_string())
-        .and_then(move |projects: Vec<data::ProjectResponse>| {
-            let mut actual_project: Option<&data::ProjectResponse> = None;
-            for p in &projects {
-                if p.ssh_url_to_repo == actual_remote {
-                    actual_project = Some(p);
-                    break;
-                }
-                if p.http_url_to_repo == actual_remote {
-                    actual_project = Some(p);
-                    break;
-                }
-            }
-            let project = actual_project.expect("couldn't find this project on gitlab");
-            let mr_req = MRRequest {
-                access_token: mr_access_token,
-                project,
-                title: title_clone,
-                description: desc_clone,
-                source_branch: current_branch,
-                target_branch: target_branch_clone,
-            };
-            create_mr(&mr_req, &mr_config)
-        })
-        .map_err(|e| {
-            println!("Could not create MR, Error: {}", e);
-        })
-        .and_then(|url: String| {
-            println!("Pushed and Created MR Successfully - URL: {}", url);
-            future::ok(())
-        });
-    rt::run(fut);
 }

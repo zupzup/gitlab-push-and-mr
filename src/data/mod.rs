@@ -44,3 +44,20 @@ pub struct MRPayload {
     pub remove_source_branch: bool,
     pub squash: bool,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Config {
+    pub group: Option<String>,
+    pub user: Option<String>,
+    pub mr_labels: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MRRequest<'a> {
+    pub access_token: String,
+    pub project: &'a ProjectResponse,
+    pub title: String,
+    pub description: String,
+    pub source_branch: String,
+    pub target_branch: String,
+}
