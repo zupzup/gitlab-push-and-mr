@@ -28,7 +28,7 @@ mod data;
 const SECRETS_FILE: &str = "./.secret";
 const CONFIG_FILE: &str = "./.config.toml";
 const MR_CONFIG_FILE: &str = "./mr.toml";
-const SSH_KEY_FILE: &str = "/Users/mario/.ssh/id_rsa";
+const SSH_KEY_FILE: &str = "~/.ssh/id_rsa";
 
 #[derive(Debug, Deserialize, Clone)]
 struct Config {
