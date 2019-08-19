@@ -109,12 +109,12 @@ fn create_mr(
             }
             let project = actual_project.expect("couldn't find this project on gitlab");
             let mr_req = MRRequest {
-                access_token: access_token,
+                access_token,
                 project,
-                title: title,
-                description: description,
+                title,
+                description,
                 source_branch: current_branch,
-                target_branch: target_branch,
+                target_branch,
             };
             http::create_mr(&mr_req, &config)
         })
