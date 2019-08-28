@@ -1,6 +1,6 @@
 use crate::data::{Config, MRPayload, MRRequest, MRResponse, ProjectResponse};
 use failure::Error;
-use futures::future;
+use futures::{future, stream::Concat2};
 use hyper::client::HttpConnector;
 use hyper::rt::{Future, Stream};
 use hyper::{Body, Client, Method, Request, Response};
@@ -14,13 +14,17 @@ pub fn fetch_projects(
     fetch(config, access_token, domain, 20)
         .and_then(|bodies| {
             let mut result: Vec<ProjectResponse> = Vec::new();
-            for b in bodies {
-                let bytes = b.concat2().wait().unwrap().into_bytes();
-                let mut data: Vec<ProjectResponse> =
-                    serde_json::from_slice(&bytes).expect("can't parse data to project response");
-                result.append(&mut data);
-            }
-            future::ok(result)
+            future::join_all(bodies)
+                .and_then(|bods| {
+                    for b in bods {
+                        let bytes = b.into_bytes();
+                        let mut data: Vec<ProjectResponse> = serde_json::from_slice(&bytes)
+                            .expect("can't parse data to project response");
+                        result.append(&mut data);
+                    }
+                    future::ok(result)
+                })
+                .map_err(|e| format_err!("req err: {}", e))
         })
         .map_err(|err| err)
 }
@@ -30,7 +34,7 @@ fn fetch(
     access_token: String,
     domain: String,
     per_page: i32,
-) -> impl Future<Item = Vec<Body>, Error = Error> {
+) -> impl Future<Item = Vec<Concat2<Body>>, Error = Error> {
     let https = HttpsConnector::new(4).expect("https connector works");
     let client = Client::builder().build::<_, hyper::Body>(https);
     let group = config.group.as_ref();
@@ -63,7 +67,7 @@ fn fetch(
             future::ok(res)
         })
         .and_then(move |res: Response<Body>| {
-            let mut result: Vec<Body> = Vec::new();
+            let mut result: Vec<Concat2<Body>> = Vec::new();
             let pages: &str = match res.headers().get("x-total-pages") {
                 Some(v) => match v.to_str() {
                     Ok(v) => v,
@@ -76,7 +80,7 @@ fn fetch(
                 Err(_) => 0,
             };
             let body: Body = res.into_body();
-            result.push(body);
+            result.push(body.concat2());
             let mut futrs = Vec::new();
             for page in 2..=p {
                 futrs.push(fetch_paged(&config, &access_token, &domain, &client, page));
@@ -98,7 +102,7 @@ fn fetch_paged(
     domain: &str,
     client: &hyper::Client<HttpsConnector<HttpConnector>>,
     page: i32,
-) -> impl Future<Item = Body, Error = Error> {
+) -> impl Future<Item = Concat2<Body>, Error = Error> {
     let group = config.group.as_ref().expect("group is configured");
     let req = Request::builder()
         .uri(format!(
@@ -118,7 +122,7 @@ fn fetch_paged(
                     res.status()
                 ));
             }
-            let body = res.into_body();
+            let body = res.into_body().concat2();
             future::ok(body)
         })
 }
