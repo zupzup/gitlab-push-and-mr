@@ -176,7 +176,11 @@ pub fn create_mr(
             future::ok(body)
         })
         .and_then(|body: Body| {
-            let bytes = body.concat2().wait().unwrap().into_bytes();
+            body.concat2()
+                .map_err(|e| format_err!("requests error: {}:", e))
+        })
+        .and_then(|body| {
+            let bytes = body.into_bytes();
             let data: MRResponse =
                 serde_json::from_slice(&bytes).expect("can't parse data to merge request response");
             future::ok(data.web_url)
