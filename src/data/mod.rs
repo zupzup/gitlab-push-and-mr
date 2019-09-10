@@ -50,6 +50,12 @@ pub struct Config {
     pub group: Option<String>,
     pub user: Option<String>,
     pub mr_labels: Option<Vec<String>>,
+    #[serde(default = "default_host")]
+    pub host: String,
+}
+
+fn default_host() -> String {
+    "https://gitlab.com".to_string()
 }
 
 #[derive(Debug, Serialize, Clone)]
