@@ -41,13 +41,13 @@ fn fetch(
     let user = config.user.as_ref();
     let uri = match group {
         Some(v) => format!(
-            "https://gitlab.com/api/v4/groups/{}/{}?per_page={}",
-            v, domain, per_page
+            "{}/api/v4/groups/{}/{}?per_page={}",
+            &config.host, v, domain, per_page
         ),
         None => match user {
             Some(u) => format!(
-                "https://gitlab.com/api/v4/users/{}/{}?per_page={}",
-                u, domain, per_page
+                "{}/api/v4/users/{}/{}?per_page={}",
+                &config.host, u, domain, per_page
             ),
             None => "invalid url".to_string(),
         },
@@ -106,8 +106,8 @@ fn fetch_paged(
     let group = config.group.as_ref().expect("group is configured");
     let req = Request::builder()
         .uri(format!(
-            "https://gitlab.com/api/v4/groups/{}/{}?per_page=20&page={}",
-            group, domain, page
+            "{}/api/v4/groups/{}/{}?per_page=20&page={}",
+            &config.host, group, domain, page
         ))
         .header("PRIVATE-TOKEN", access_token)
         .body(Body::empty())
@@ -134,8 +134,8 @@ pub fn create_mr(
     let https = HttpsConnector::new(4).expect("https connector works");
     let client = Client::builder().build::<_, hyper::Body>(https);
     let uri = format!(
-        "https://gitlab.com/api/v4/projects/{}/merge_requests",
-        payload.project.id
+        "{}/api/v4/projects/{}/merge_requests",
+        &config.host, payload.project.id
     );
     let labels = config
         .mr_labels
