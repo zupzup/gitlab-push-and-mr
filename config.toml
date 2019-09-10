@@ -1,2 +1,3 @@
 user = "mzupanmz"
 mr_labels = ["Waiting for Review"]
+host = "https://gitlab.com" # defaults to 'https://gitlab.com'
