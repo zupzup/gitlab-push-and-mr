@@ -34,13 +34,13 @@ pub struct MRResponse {
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub struct MRPayload {
-    pub id: String,
-    pub title: String,
-    pub description: String,
-    pub source_branch: String,
-    pub target_branch: String,
-    pub labels: String,
+pub struct MRPayload<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub source_branch: &'a str,
+    pub target_branch: &'a str,
+    pub labels: &'a str,
     pub remove_source_branch: bool,
     pub squash: bool,
 }
@@ -54,10 +54,10 @@ pub struct Config {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct MRRequest<'a> {
-    pub access_token: String,
+    pub access_token: &'a str,
     pub project: &'a ProjectResponse,
-    pub title: String,
-    pub description: String,
-    pub source_branch: String,
-    pub target_branch: String,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub source_branch: &'a str,
+    pub target_branch: &'a str,
 }
