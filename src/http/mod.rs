@@ -101,7 +101,7 @@ async fn fetch(
     domain: &str,
     per_page: i32,
 ) -> Result<Vec<Bytes>> {
-    let https = HttpsConnector::new().expect("https connector works");
+    let https = HttpsConnector::new()?;
     let client = Client::builder().build::<_, hyper::Body>(https);
     let group = config.group.as_ref();
     let user = config.user.as_ref();
