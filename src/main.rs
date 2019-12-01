@@ -17,15 +17,12 @@ use futures::future;
 use git2::{PushOptions, RemoteCallbacks, Repository};
 use hyper::rt::{self, Future};
 use std::env;
-use std::fs::{self, File};
-use std::io::prelude::*;
-use std::io::BufReader;
+use std::fs::{self};
 
 mod data;
 mod http;
 
-const SECRETS_FILE: &str = "./.secret";
-const CONFIG_FILE: &str = "./config.toml";
+const CONFIG_FILE: &str = ".glpm/config.toml";
 
 fn git_credentials_ssh_callback(
     _user: &str,
@@ -37,8 +34,9 @@ fn git_credentials_ssh_callback(
     if cred.contains(git2::CredentialType::USERNAME) {
         return git2::Cred::username(user);
     }
-    let key_file = env::var("SSH_KEY_FILE").expect("no ssh key file provided");
-    let passphrase = env::var("SSH_PASS").expect("no ssh pass provided");
+    let config = get_config().expect("Could not read config");
+    let key_file = &config.ssh_key_file.unwrap();
+    let passphrase = &config.ssh_passphrase.unwrap();
     git2::Cred::ssh_key(
         user,
         None,
@@ -56,25 +54,11 @@ fn git_credentials_pwd_callback(
     git2::Cred::userpass_plaintext(&config.user.unwrap(), &config.password.unwrap())
 }
 
-fn get_access_token() -> Result<String, Error> {
-    let file = File::open(SECRETS_FILE).expect("Could not read access token file");
-    let buf = BufReader::new(file);
-    let lines: Vec<String> = buf
-        .lines()
-        .take(1)
-        .map(std::result::Result::unwrap_or_default)
-        .collect();
-    if lines[0].is_empty() {
-        return Err(format_err!("access token mustn't be empty"));
-    }
-    Ok(lines[0].to_string())
-}
-
 fn get_config() -> Result<Config, Error> {
-    // let CONFIG_FILE: &str =
-    //     &(env::var("HOME").expect("Cannot find HOME environment variable") + "/.glpm/config.toml");
+    let config_file: &str =
+        &(env::var("HOME").expect("Cannot find HOME environment variable") + "/" + CONFIG_FILE);
 
-    let data = fs::read_to_string(CONFIG_FILE)?;
+    let data = fs::read_to_string(config_file)?;
     let config: Config = toml::from_str(&data)?;
     Ok(config)
 }
@@ -175,13 +159,12 @@ fn main() {
     let description = matches.value_of("description").unwrap_or("");
     let target_branch = matches.value_of("target_branch").unwrap_or("master");
 
-    let access_token = get_access_token().expect("could not get access token");
-    let config = get_config().expect("could not read config");
-    // let config = get_config().expect("Could not read config file");
-    // let access_token = config
-    //     .apikey
-    //     .expect("Could not get access token")
-    //     .to_string();
+    let config = get_config().expect("Could not read config file");
+    let access_token = config
+        .clone()
+        .apikey
+        .expect("Could not get access token")
+        .to_string();
 
     if config.group.is_none() && config.user.is_none() {
         panic!("Group or User for Gitlab need to be configured")

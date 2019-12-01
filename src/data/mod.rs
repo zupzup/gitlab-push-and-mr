@@ -51,6 +51,8 @@ pub struct Config {
     pub user: Option<String>,
     pub password: Option<String>,
     pub apikey: Option<String>,
+    pub ssh_key_file: Option<String>,
+    pub ssh_passphrase: Option<String>,
     pub mr_labels: Option<Vec<String>>,
     #[serde(default = "default_host")]
     pub host: String,
