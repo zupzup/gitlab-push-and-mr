@@ -27,7 +27,7 @@ mod http;
 const SECRETS_FILE: &str = "./.secret";
 const CONFIG_FILE: &str = "./config.toml";
 
-fn git_credentials_callback(
+fn git_credentials_ssh_callback(
     _user: &str,
     user_from_url: Option<&str>,
     cred: git2::CredentialType,
@@ -47,6 +47,15 @@ fn git_credentials_callback(
     )
 }
 
+fn git_credentials_pwd_callback(
+    _user: &str,
+    _user_from_url: Option<&str>,
+    _cred: git2::CredentialType,
+) -> Result<git2::Cred, git2::Error> {
+    let config = get_config().expect("Could not read config");
+    git2::Cred::userpass_plaintext(&config.user.unwrap(), &config.password.unwrap())
+}
+
 fn get_access_token() -> Result<String, Error> {
     let file = File::open(SECRETS_FILE).expect("Could not read access token file");
     let buf = BufReader::new(file);
@@ -62,6 +71,9 @@ fn get_access_token() -> Result<String, Error> {
 }
 
 fn get_config() -> Result<Config, Error> {
+    // let CONFIG_FILE: &str =
+    //     &(env::var("HOME").expect("Cannot find HOME environment variable") + "/.glpm/config.toml");
+
     let data = fs::read_to_string(CONFIG_FILE)?;
     let config: Config = toml::from_str(&data)?;
     Ok(config)
@@ -70,7 +82,7 @@ fn get_config() -> Result<Config, Error> {
 fn get_current_branch(repo: &Repository) -> Result<String, Error> {
     let branches = repo.branches(None).expect("can't list branches");
     branches.fold(
-        Err(format_err!("couldn't find current branch")),
+        Err(format_err!("Couldn't find current branch")),
         |acc, branch| {
             let b = branch?;
             if b.0.is_head() {
@@ -165,23 +177,32 @@ fn main() {
 
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
+    // let config = get_config().expect("Could not read config file");
+    // let access_token = config
+    //     .apikey
+    //     .expect("Could not get access token")
+    //     .to_string();
 
     if config.group.is_none() && config.user.is_none() {
         panic!("Group or User for Gitlab need to be configured")
     }
 
-    let repo = Repository::open("./").expect("current folder is not a git repository");
-    let current_branch = get_current_branch(&repo).expect("could not get current branch");
+    let repo = Repository::open("./").expect("Current folder is not a git repository");
+    let current_branch = get_current_branch(&repo).expect("Could not get current branch");
     let mut remote = repo
         .find_remote("origin")
-        .expect("origin remote could not be found");
+        .expect("Origin remote could not be found");
 
     let mut push_opts = PushOptions::new();
     let mut callbacks = RemoteCallbacks::new();
-    let actual_remote = String::from(remote.url().expect("could not get remote URL"));
+    let actual_remote = String::from(remote.url().expect("Could not get remote URL"));
     let remote_clone = actual_remote.clone();
     let branch_clone = current_branch.clone();
-    callbacks.credentials(git_credentials_callback);
+    if config.password.is_none() {
+        callbacks.credentials(git_credentials_ssh_callback);
+    } else {
+        callbacks.credentials(git_credentials_pwd_callback);
+    }
     callbacks.push_update_reference(move |refname, _| {
         println!("Successfully Pushed: {:?}", refname);
         create_mr(
@@ -201,5 +222,5 @@ fn main() {
             &[&format!("refs/heads/{}", current_branch.to_string())],
             Some(&mut push_opts),
         )
-        .expect("could not push to origin");
+        .expect("Could not push to origin");
 }

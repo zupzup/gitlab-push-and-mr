@@ -49,6 +49,8 @@ pub struct MRPayload {
 pub struct Config {
     pub group: Option<String>,
     pub user: Option<String>,
+    pub password: Option<String>,
+    pub apikey: Option<String>,
     pub mr_labels: Option<Vec<String>>,
     #[serde(default = "default_host")]
     pub host: String,
