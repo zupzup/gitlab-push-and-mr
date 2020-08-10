@@ -161,7 +161,7 @@ fn main() {
         .value_of("title")
         .expect("title needs to be provided");
     let description = matches.value_of("description").unwrap_or("");
-    let target_branch = matches.value_of("target_branch").unwrap_or("master");
+    let target_branch = matches.value_of("target_branch").unwrap_or("main");
 
     let access_token = get_access_token().expect("could not get access token");
     let config = get_config().expect("could not read config");
